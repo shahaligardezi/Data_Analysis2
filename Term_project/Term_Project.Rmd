@@ -1,0 +1,305 @@
+---
+title: "Data Analysis 2 : Term Project"
+author: "Shah Ali Gardezi"
+output: pdf_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+```{r include=FALSE, message=FALSE, warning=FALSE}
+# CLEAR MEMORY
+rm(list=ls())
+
+
+# Import libraries
+library(tidyverse)
+library(haven)
+library(data.table)
+library(rms)
+library(lspline)
+library(huxtable)
+library(modelsummary)
+library(pscl)
+library(esquisse)
+library(ggplot2)
+library(dplyr)
+library(fixest)
+library(kableExtra)
+
+
+
+
+```
+
+```{r include=FALSE, message=FALSE, warning=FALSE}
+# Loading the data
+bms <- read_csv(url("https://raw.githubusercontent.com/shahaligardezi/Data_Analysis2/main/Term_project/Raw_Data_folder/BigMartSales.csv"))
+```
+
+```{r include=FALSE, message=FALSE, warning=FALSE}
+
+# Data Cleaning
+
+#Cleaning Fat Content
+bms$Item_Fat_Content[bms$Item_Fat_Content == 'LF'] <- 'Low Fat'
+bms$Item_Fat_Content[bms$Item_Fat_Content == 'reg'] <- 'Regular'
+
+#Adding a Product column
+bms <-  bms %>% mutate(product = paste(bms$Item_Fat_Content,bms$Item_Type,sep = " "))
+bms <- bms %>%  mutate(price_per_unit = Item_MRP/Item_Weight)
+
+#Removing NAs of weight
+bms <-  bms %>% filter(!is.na(Item_Weight)) 
+
+#choosing Low Fat Bread 
+bread_data <- bms %>% filter(product =="Low Fat Breads")
+datasummary_skim(bread_data)
+
+
+#assigning Binary variables to store type (categorical variable)
+bread_data$type1store <- ifelse(bread_data$Outlet_Type == "Supermarket Type1",1,0)
+bread_data$type2store <- ifelse(bread_data$Outlet_Type == "Supermarket Type2",1,0)
+bread_data$grocerystore <- ifelse(bread_data$Outlet_Type == "Grocery Store",1,0)
+
+#assigning Binary Variables to location type 
+bread_data$tier1 <- ifelse(bread_data$Outlet_Location_Type == "Tier 1",1,0)
+bread_data$tier2 <- ifelse(bread_data$Outlet_Location_Type == "Tier 2",1,0)
+bread_data$tier3 <- ifelse(bread_data$Outlet_Location_Type == "Tier 3",1,0)
+
+
+#Data Summary Table 
+P95 <- function(x){ quantile(x,.95,na.rm=T)}
+P5 <- function(x){ quantile(x,.95,na.rm=T)}
+summary <- datasummary((`Item Sales` = Item_Outlet_Sales) + 
+              (`Price per unit`= price_per_unit) + 
+              (`Item Visibility`= Item_Visibility) + 
+              (`Store Location:Tier 1` = tier1) + 
+              (`Store Location:Tier 2` = tier2) + 
+              (`Store Location:Tier 3`= tier3) + 
+              (`Supermarket:Type1`= type1store) + 
+              (`Supermarket:Type2`= type2store) + 
+              (`Grocery Store` = grocerystore) ~ Mean + SD + Min + Max + Median + P95 + P5+ N, 
+            data = bread_data, title = "Descriptive statistics" ) %>% 
+            kable_styling(latex_options = c("HOLD_position","scale_down"))
+
+```
+
+```{r include=FALSE, fig.align = 'center', message=FALSE, warning=FALSE}
+
+# Checking correlations of variables
+num_df <- keep( bread_data , is.numeric ) 
+AT <- round( cor( num_df , use = "complete.obs") , 2 )
+
+# create a lower triangular matrix
+AT[ upper.tri( AT ) ] <- NA
+
+# Put it into a tibble format
+melted_cormat <- melt( AT , na.rm = TRUE)
+
+#Creating a Heat-Map
+ cor_matrix <- ggplot( data = melted_cormat, aes( Var2 , Var1 , fill = value ) )+
+  geom_tile( color = "white" ) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Correlation") +
+  theme_bw()+ 
+  theme( axis.text.x = element_text(angle = 90, vjust = 1, 
+                                    size = 10, hjust = 1))+
+  labs(y="",x="")+
+  ggtitle("Figure 1: Correlation Matrix")
+  coord_fixed()
+  cor_matrix
+  
+```
+
+## Introduction
+
+This report is a part of Term Project for MS in Business Analytics course, _Data Analysis 2_ taught at Central European University (Budapest Campus). The project focuses on the evaluating the association of _**Item Sales**_ with _**Price per unit**_ of Low Fat Bread sold across the 10 stores of BigMart and aims to  estimate how confounding variables such as _Item Visibility_, _Outlet Location Type_ and _Outlet Store Type_ influence this association. 
+
+## Data and Data Mungaing
+
+The data is extracted from [**Kaggle**](https://www.kaggle.com/mrmorj/big-mart-sales) and it represents the sales of products in the year 2013, in 10 stores of BigMart. The data consists of 12 variables with total number of observations equaling 8523. Some of the variable of interest that are used for this analysis includes;
+
+- Item MRP: This is the market retail price of the product
+- Item Weight: This is the weight of the product sold
+- Item Outlet Sales: This is sales of the product. This also be our dependent variable the _*y*_ in our regression
+- Item Visibility: This is the percentage of total display area of all products in a store allocated to the particular product
+- Item Fat Content: This describes the product's fat content (Low Fat or Regular)
+- Item Type: This is the category from which the item belongs to for example snacks, dairy, fruits etc
+- Outlet Location Type: This is the type of city the store is located in
+- Outlet Store Type: This describes the type of store, for example Supermarket Type1, Grocery store, Supermarket Type2 etc
+
+There was a limitation in the data set with regards to the number of observations for each unique item. For instance the product with highest observations contained 10 observations only. This poses a problem for the quality of the association between the independent and dependent variable. This issue is addressed by creating a new variable named _Product_ and making few assumptions about very similar products. The new created variable, _Products_ is formed by combining _Item Fat Content_ and _Item Type_ variable after cleaning of these variables. While there is a lot differentiation in general between the products in the categories like snacks, fruits, seafood, the difference is small in the bread category. The choice of _Low Fat Bread_ is made as the product of interest while assuming that all the breads in this category are of the same type with same ingredients etc. Moreover, these breads were all sold by different weight quantities so in order to normalize their price, the Price per Unit of weight is calculated. This is done by dividing the _Item MRP_ by _Item Weight_ and creating a new variable _Price per Unit_. This will be the independent variable, the _*x*_ in our analysis.
+
+The number of observations for the Low Fat Bread come out to be 140. However, at this point the missing values in the data of Low Fat Bread have not been account for. The missing values appear in the data for _Item Weight_ as no observations are recorded for the weight of the breads sold and thus calculating the price per unit of bread is not possible.  It is decided to drop them, and the number of observations come out to be 109.
+
+In order fully uncover the association of _Item Sales_ of Low Fat Bread with _Price per Unit_ weight, confounding variables need to be selected. In order to have a better understanding of which variables to choose as confounders, the correlation of different variables with the *y* variable is to be calculated.  However, it is noted that there are categorical variables in our data as well,  such as _Outlet Location Type_ and _Outlet Store Type_ which could have a correlation with the _Item Sales_. To overcome this, these categorical variables are changed into Binary (numerical) variables. Three Binary variables for _Outlet Location Type_( _tier1_, _tier2_, _tier3_ ) and three for _Outlet Store Type_  ( _type1store_, _type2store_, _grocerystore_) are hence created, each representing a value of 1 for when their value is TRUE in respective former columns. The correlation is then calculated by creating a lower triangular matrix and heat map. The result of correlation is shown in Figure 1 of the appendix. The heat map shows that item visibility in stores, outlet location and store type indeed have a correlation in +/- 0.5 bounds with Item Sales. Hence our confounding variables will be _Item Visibility_, _Outlet Location Type_, and _Outlet Store Type_.
+
+With the data now cleaned and all the variables in place, we observe the values in the data for each variable using _datasummary_ (Shown in Table 1 in the appendix). Some degree of right skewness is observed in the _x_ and _y_  variables as the mean is greater than median. We plot the density plots for  _**Item Sales**_ with _**Price per Unit**_ to visualize their distribution and take decision about whether computing the log for them will make the distribution normal distributed. At the same time we check for extreme values. There are extreme values in both sales (Item Sales = 6911) and price (Price per Unit = 32.6), but it decided to include them in this analysis. However, when computing the log, while the log of price helped solve the right skewness of Price per Unit, taking log of sales actually caused the distribution to be left skewed which is highly undesirable so we will proceed with Item Sales values without the log. 
+
+## Regression Models
+
+Before running on the actual regression models, we make a hypothesis about the expected result of association of Item Sales and Price per Unit weight of low fat bread. Our hypothesis estimates that in an unconditional model, as the Price per Unit weight tends to be higher by one unit, the sales of low fat bread tends to be lower on an average. The reasoning behind this can be thought of that, as the price goes higher, this may influence a lower demand by the consumers and hence lower sales. It is usually in the case of luxury products that the  higher price tag item tends to perceived as more luxurious. But since this a necessity item we do not expect that behavior. 
+$$H_o: \beta_{true} <0$$
+We run a Non-Parametric _Lowess_ regression to see how the association looks like. Figure 2 in the appendix shows the result which is contrary to our hypothesis. As the Price per Unit weight go higher the sales of the product tend to go higher as well but up until certain range which is 2.75 log of Price per Unit. This can be accredited to consumers being more health conscious and prefer the low fat bread even if the price goes higher and the higher price might suggest a better quality of the food item. Beyond this point as the price goes higher the sales of low fat bread tend to be lower on average. The _Lowess_ also suggests that we can employ splines to better understand the association between the dependent and independent variables. When moving on with our regression we will use spline with knots at log price per unit of 2.75.
+
+
+
+```{r include=FALSE, message=FALSE, warning=FALSE}
+
+#datasummary_skim(bread_data)
+
+#adding Logsales and Logprices variables
+bread_data$logsales <- log(bread_data$Item_Outlet_Sales)
+bread_data$logprice <- log(bread_data$price_per_unit)
+
+
+#Checking for the shapes of distributions
+b <- ggplot(data= bread_data, aes(x= logprice, y =Item_Outlet_Sales))+
+   geom_smooth()
+b
+
+#Log of Price per Unit is Normally Distributed
+c <- ggplot(data= bread_data, aes(x= logprice))+
+  geom_density()
+c
+
+#Distribution is almost normal
+d <- ggplot(data= bread_data, aes(x= Item_Outlet_Sales )) +
+   geom_density()
+d
+
+# Log of Item Sales: Distribution gets left skewed. So will NOT be using log Sales
+e <- ggplot(data= bread_data, aes(x= logsales))+
+  geom_density()
+e
+
+
+```
+
+```{r include=FALSE, fig.align='center', echo=FALSE}
+#Lowess distribution of Item Sales vs Log Price per Unit
+lowess <- ggplot(data= bread_data, aes(x= logprice, y= Item_Outlet_Sales )) +
+   geom_smooth(formula = y~x, method = "loess") +
+ ggtitle("Figure 2: Non-Parametric Lowess - Item Sales & Log Price per Unit ")+
+  labs(x = "Log (Price per Unit)", y = "Item Sales")
+
+```
+
+
+
+```{r include=FALSE, message=FALSE, warning=FALSE}
+
+#Running Regressions
+
+# Sales vs logprice 
+reg1a <- feols(Item_Outlet_Sales ~lspline(logprice,2.75), data = bread_data, vcov = "hetero")
+summary(reg1a)
+
+
+# Sales vs logprice and visibility
+reg2a <- feols(Item_Outlet_Sales ~ lspline(logprice,2.75) + Item_Visibility, data=bread_data, vcov = "hetero")
+summary(reg2a)
+
+# Sales vs logprice, visibility and store location 
+reg3a <- feols(Item_Outlet_Sales ~ lspline(logprice,2.75) + Item_Visibility + tier1 + tier3 , data=bread_data, vcov = "hetero")
+summary(reg3a)
+
+# Sales vs logprice, visibility and store type
+reg4a <- feols(Item_Outlet_Sales ~ lspline(logprice,2.75) + Item_Visibility + type2store + grocerystore  , data=bread_data, vcov = "hetero")
+summary(reg4a)
+
+# Sales vs logprice, visibility, store location and  store type
+reg5a <- feols(Item_Outlet_Sales ~ lspline(logprice,2.75) + Item_Visibility + tier1 + tier3 + type2store + grocerystore, data=bread_data, vcov = "hetero")
+summary(reg5a)
+
+# Sales vs logprice, visibility, store location, store type, Interaction of visibility w/ storetype
+reg6a <- feols(Item_Outlet_Sales ~ lspline(logprice,2.75) + Item_Visibility + tier1 + tier3 + type2store + grocerystore + (Item_Visibility*type2store) + (Item_Visibility*grocerystore) , data=bread_data, vcov = "hetero")
+summary(reg6a)
+
+```
+**Model 1: Sales vs Log Price per Unit**
+$$Item \ Sales:=\beta_0+\beta_1ln(Price \ per \ unit) $$
+The first regression model is the level-log regression of Item Sales on Price per Unit (results summarized in Table Regression Model Summary in Appendix).  The coefficient here shows that in the range of log Price per Unit of less than 2.75, the Item Sales of Low Fat Bread tends to be higher by 16.5 units on average, for one percent higher Price per Unit. This value is significant at 99.9%. While in the range beyond log Price per Unit of 2.75, the Item Sales tends to be lower by 7.6 units on average, for one percent higher Price per Unit. However this is not a significant value. The R square for this regression is 27.5% which refers to the percentage value of the variation in Item Sales that is explained by the Log of Price per Unit, the rest is left for residual variation. The intercept in this regression is meaningless. Its intercept coefficient estimates that if the Log Price per Unit of Low Fat bread is 0, the Item Sales tends to be lower by 14.8% on average, which is meaningless to infer.
+
+**Model 2: Item Sales on Log Price per Unit and Item Visibility**
+$$Item \ Sales:=\beta_0+\beta_1ln(Price \ per \ unit) \ + \beta_2(Item\ Visibility) $$
+We introduce a confounding variable, the _Item Visibility_ in this regression and conditioned Price per Unit on it. The coefficient of log Price per Unit estimates that for the range of log Price per Unit of less than 2.75, the Item Sales of low fat bread tends to be higher by 15.9 units on average for one percent higher Price per Unit keeping everything else constant. This value is significant at 99.9%.In the range of log Price per Unit beyond 2.75, the Item Sales tends to be lower by 5.4 units on average, for one percent higher Price per Unit, keeping everything else constant.However, since the standard error for this coefficient is around 7.8 units, the value of log Price per Unit includes 0 this not significant even at 80% confidence interval. The coefficient of _Item Visibility_ estimates that Item Sales tends to be lower by 3782.6 units on average for one unit higher Item Visibility keeping everything else constant, but the value not significant and has a very hight standard error. The R square for the regression is 28.25% a slight increase from the previous regression. The intercept is again meaningless as it tells that at 0 log Price per Unit and with 0 Item Visibility, the Item Sales tends to be lower by 11.4 units on average. 
+
+**Model 3: Item Sales on Log Price per Unit,Item Visibility and Outlet Location **
+$$Item \ Sales:=\beta_0+\beta_1ln(Price \ per \ unit) \ + \beta_2(Item\ Visibility) + \beta_3(Tier\ 1 \ Location) + \beta_4(Tier\ 3 \ Location) $$
+We include another confounding variable, the _Outlet Location_ and estimate the results for log Price per Unit.  Tier 2 Location is kept as a reference category for it has the highest number of observations. We see that the coefficient is very similar to Model 2 with similar significant levels for both splines. While the coefficient of Tier 1 Location is not important for our analysis, however it estimates that if the store is in Tier 1 Location, the Item Sales of Low Fat Bread tend to be higher 527 units on average than if the store was in Tier 2 Location, keeping everything else constant. This value is significant at 90%. The R square for the regression is 30.7% a little raised from Model 2.
+
+**Model 4: Item Sales on Log Price per Unit,Item Visibility and Store type **
+$$Item \ Sales:=\beta_0+\beta_1ln(Price \ per \ unit) \ + \beta_2(Item\ Visibility) + \beta_3(Type\ 2 \ Supermarket) + \beta_4(Grocery \ Store) $$
+This 4th regression models accounts of another confounding variable which is store type in place of store location. Type 1 Supermarket is taken as the reference variable  in this statistical model. The coefficient of log Price per Unit estimates Item Sales to be 18.7 units higher on average for one percent higher Price per Unit, keeping everything else constant. This value is significant at 99.9%. The value of coefficient for second spline is not significant however. The B4 coefficient estimates that if a store is a Grocery Store, the Item Sales of low fat bread tends to be lower by 2299.5 units on average,than Type 2 Supermarket, and this value is significant at 99.9%. The R square for this model is around 42% suggesting the percentage of the variation in Item Sales by independent variable and the rest which is left for residual variation.
+
+**Model 5: Item Sales on Log Price per Unit,Item Visibility, Store Location and Store type **
+$$Item \ Sales:=\beta_0+\beta_1ln(Price \ per \ unit) \ + \beta_2(Item\ Visibility) + \beta_3(Tier\ 1 \ Location)$$
+$$+ \beta_4(Tier\ 3 \ Location) + \beta_5(Type\ 1 \ Supermarket) + \beta_6(Grocery \ Store) $$
+In this model, we include all the confounding variables and analyze the overall association and changes in the coefficients. The coefficient of log Price per Unit estimates that for the range of log Price per Unit of less than 2.75, the Item Sales of Low Fat Bread tends to be higher by 18.5 units on average for one percent higher Price per Unit keeping everything else constant. This value is significant at 99.9%. However, in the range of log Price per Unit beyond 2.75, the Item Sales tends to be lower by 11.8 units on average, for one percent higher Price per Unit, keeping everything else constant and this value is not significant. 
+Moreover, with Tier 2 Location as our reference the coefficient of Tier 1 Location estimates that if the store is in Tier 1 Location, the Item Sales of Low Fat Bread tend to be higher 510 units on average than if the store was in Tier 2 Location, keeping everything else constant, and this value is significant at 90%. 
+With the addition of store type in the confounding variable, keeping Type 1 Supermarket as the base variable, the coefficient of Grocery Store estimates that the Item Sales of Low Fat Bread tend to be lower by 2187.1 units on average than if a store is Type 1 Supermarket, on average keeping everything else constant. This value is significant at 99.9%. The R squared for this Model is 42.7%
+
+**Model 6: Item Sales on Log Price per Unit,Item Visibility, Store Location, Store type and interactions **
+$$Item \ Sales:=\beta_0+\beta_1ln(Price \ per \ unit) \ + \beta_2(Item\ Visibility) + \beta_3(Tier\ 1 \ Location) + \beta_4(Tier\ 3 \ Location)$$ 
+$$+\ \beta_5(Type\ 1 \ Supermarket) + \beta_6(Grocery \ Store) \ + \beta_7(Item\ Visibility*Type\ 2 \ Supermarket) $$
+$$+\ \beta_8\ (Item\ Visibility*Grocery\ store)$$
+In this last model of our analysis we add the interaction of store type with the item visibility. The coefficients of log Price per Unit for both ranges, store location do not show much change. The interaction coefficients of Item Visibility with Type 2 Supermarket estimates that if a store is Type 2 Supermarket, the Item Sales tends to be higher by 5836 units on average, if the Item Visibility goes higher by one unit. This value is not significant because of the high value of standard error. The interaction coefficients of Item Visibility with Grocery Store estimates that if a store is Grocery Store, the Item Sales tends to be lower by 5836 units on average, if the Item Visibility goes higher by one unit. This value is not significant as well because of the high value of standard error. The R square of this model is 42%.
+
+## Conclusion
+
+Based on the results of running several regression models, we are better able to gauge the association of Item Sales with Price per Unit along with other confounding variables which could impact our independent variable. A step by step regression reveals that some of the confounding variables actually help us estimate a better association between the dependent and independent variable. The choice of model is based on the variables, which are better quality predictors and gives values of higher significance level for the coefficient. Our *Preferred Model* for this analysis is: 
+$$Item \ Sales:=\beta_0+\beta_1ln(Price \ per \ unit) \ + \beta_2(Item\ Visibility) +\ \beta_3(Tier\ 1 \ Location) $$
+$$+/ \beta_4(Tier\ 3 \ Location) +\ \beta_5(Type\ 1 \ Supermarket) + \beta_6(Grocery \ Store) $$
+The choice of selection for this model is based on fact that as we subsequently incorporated confounders in our model, the Adjusted R squared began to increase from 27% to 42% up till Model 5. However, as we add the interaction in the model 6 we witness the adjusted R2 tends to decrease. To compare the goodness-of-fit for regression we compare Adjusted R2 square that contain differing numbers of variable, its value increase only when the new term improves the model fit more than expected.In our case when we add the interaction term of Item visibility with store type, the adjusted R square decreased suggesting this interaction was not contributing towards a better model fit. Moreover, when we see the p values for our regression while comparing model 5 & 6 we see that the level of significance is same for the coefficients but the p values in model 5 is comparatively lower. Therefore, considering these two factors we can conclude that model 5 provides a better simulation to compare with different estimators with respect to bias and mean squared error.
+
+Lastly, our Null hypothesis is invalidated in the first spline. According to our model when Log Price per Unit gets higher, the Item Sales tends to go higher on average, up until our first spline knot (log Price per Unit of 2.75 ). This suggests that our product is highly elastic. Its not behaving as a necessity item should but rather mimics the behavior of a luxury product! While the idea of bread being a luxury seems peculiar, looking from another angle a Low Fat Bread is indeed a luxury. It has a niche market, not everyone wants it but those who want it are willing to pay a bit higher for it.The second spline however, validates the Null hypothesis the reason is that there is tipping point after which consumers tend not to buy the Low Fat Bread which has an higher price. Because at the end of the day it is a bread, people have the option of other healthier alternatives to switch to. 
+
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE,include=FALSE}
+
+summary_reg <- msummary(list(reg1a, reg2a, reg3a, reg4a, reg5a, reg6a),
+         fmt="%.0f",
+         gof_omit = 'DF|Deviance|Log.Lik.|F|AIC|BIC|R2|PseudoR2|R2 Adj.|Std.Errors',
+         stars=c('*' = .05, '**' = .01),
+         coef_rename = c("(Intercept)" = "Intercept",
+                         "lspline(logprice, 2.75)1"="ln(price per unit) < 2.75",
+                          "lspline(logprice, 2.75)2"="ln(price per unit) > 2.75",
+                          "Item_Visibility"="Item Visibility",
+                          "tier1"="Tier1 Location ",
+                          "tier2"="Tier2 Location ",
+                          "tier3"="Tier3 Location",
+                          "type1store"="Type 1 supermarket",
+                          "type2store"="Type 2 supermarket",
+                         "grocerystore"="Grocery Store",
+                          "Item_Visibility:type2store"="(Item Visibility) x (Type 2 supermarket)",
+                          "Item_Visibility:grocerystore"="(Item Visibility) x (Grocery store)",
+                         "Num.Obs." = "Observations"),
+          title = "Regression Model Summary") %>% 
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+summary_reg 
+
+
+```
+
+## Appendix
+
+```{r,echo=FALSE}
+summary
+```
+
+```{r,echo=FALSE}
+cor_matrix
+```
+
+```{r, echo=FALSE}
+lowess
+```
+
+```{r, echo=FALSE}
+summary_reg
+```
+
